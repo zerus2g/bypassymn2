@@ -17,14 +17,40 @@ bot = telebot.TeleBot(BOT_TOKEN)
 # Flask app cho health check
 app = Flask(__name__)
 
+# Biến để track bot status
+bot_status = {
+    "start_time": time.time(),
+    "last_activity": time.time(),
+    "total_requests": 0,
+    "is_running": True
+}
+
 @app.route('/')
 def health_check():
     """Health check endpoint cho Render"""
+    uptime = time.time() - bot_status["start_time"]
+    hours = int(uptime // 3600)
+    minutes = int((uptime % 3600) // 60)
+    
     return jsonify({
         "status": "healthy",
         "bot": "Zeus Auto Bot",
         "version": "1.0.0",
+        "uptime": f"{hours}h {minutes}m",
+        "total_requests": bot_status["total_requests"],
+        "last_activity": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(bot_status["last_activity"])),
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
+    })
+
+@app.route('/ping')
+def ping():
+    """Ping endpoint để keep alive"""
+    bot_status["last_activity"] = time.time()
+    return jsonify({
+        "status": "pong", 
+        "timestamp": time.strftime("%H:%M:%S"),
+        "bot": "Zeus Auto Bot",
+        "uptime": f"{int((time.time() - bot_status['start_time']) // 3600)}h {int(((time.time() - bot_status['start_time']) % 3600) // 60)}m"
     })
 
 @app.route('/webhook', methods=['POST'])
@@ -179,6 +205,9 @@ def format_response_message(site_name, code, status="completed"):
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     """Gửi menu chào mừng"""
+    bot_status["total_requests"] += 1
+    bot_status["last_activity"] = time.time()
+    
     welcome_text = "🎯 Chào mừng đến với Zeus Auto Bot!\n\n"
     welcome_text += "📋 Danh sách các trang hỗ trợ:\n"
     
@@ -193,6 +222,9 @@ def send_welcome(message):
 @bot.message_handler(commands=['ymn'])
 def handle_ymn_command(message):
     """Xử lý lệnh /ymn"""
+    bot_status["total_requests"] += 1
+    bot_status["last_activity"] = time.time()
+    
     try:
         # Parse command
         parts = message.text.split()
@@ -251,6 +283,9 @@ def handle_ymn_command(message):
 @bot.message_handler(commands=['help'])
 def send_help(message):
     """Gửi hướng dẫn sử dụng"""
+    bot_status["total_requests"] += 1
+    bot_status["last_activity"] = time.time()
+    
     help_text = "📖 Hướng dẫn sử dụng Zeus Auto Bot:\n\n"
     help_text += "🔧 Các lệnh có sẵn:\n"
     help_text += "• /start - Khởi động bot\n"
@@ -268,9 +303,18 @@ def send_help(message):
 @bot.message_handler(commands=['status'])
 def send_status(message):
     """Hiển thị trạng thái bot"""
+    bot_status["total_requests"] += 1
+    bot_status["last_activity"] = time.time()
+    
+    uptime = time.time() - bot_status["start_time"]
+    hours = int(uptime // 3600)
+    minutes = int((uptime % 3600) // 60)
+    
     status_text = "📊 Trạng thái Zeus Auto Bot:\n\n"
     status_text += "🟢 Bot đang hoạt động\n"
     status_text += f"📋 Số site hỗ trợ: {len(SITE_CONFIGS)}\n"
+    status_text += f"⏰ Uptime: {hours}h {minutes}m\n"
+    status_text += f"📈 Tổng requests: {bot_status['total_requests']}\n"
     status_text += "⚡ API: traffic-user.net\n"
     status_text += "🕐 Thời gian: " + time.strftime("%H:%M:%S")
     
@@ -279,6 +323,9 @@ def send_status(message):
 @bot.message_handler(func=lambda message: True)
 def echo_all(message):
     """Xử lý tin nhắn khác"""
+    bot_status["total_requests"] += 1
+    bot_status["last_activity"] = time.time()
+    
     if message.text.startswith('/'):
         bot.reply_to(message, "❓ Lệnh không hợp lệ. Gõ /help để xem hướng dẫn.")
     else:
@@ -289,6 +336,7 @@ def run_bot():
     print("🚀 Khởi động Zeus Auto Bot...")
     print("📱 Bot đã sẵn sàng nhận lệnh!")
     print("🔗 API: traffic-user.net")
+    print("🔄 Keep alive mode: ENABLED")
     
     try:
         bot.polling(none_stop=True)
