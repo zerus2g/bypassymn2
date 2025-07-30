@@ -1,0 +1,1 @@
+web: python hades_telegram_bot_advanced.py 
