@@ -7,6 +7,8 @@ import random
 import time
 import threading
 import os
+import signal
+import sys
 from urllib.parse import quote
 from flask import Flask, request, jsonify
 
@@ -22,8 +24,24 @@ bot_status = {
     "start_time": time.time(),
     "last_activity": time.time(),
     "total_requests": 0,
-    "is_running": True
+    "is_running": True,
+    "bot_mode": "webhook"  # Thêm mode tracking
 }
+
+# Global variable để track bot instance
+bot_instance = None
+
+def signal_handler(signum, frame):
+    """Handle shutdown signal"""
+    print("🛑 Shutting down bot gracefully...")
+    bot_status["is_running"] = False
+    if bot_instance:
+        bot_instance.stop_polling()
+    sys.exit(0)
+
+# Register signal handlers
+signal.signal(signal.SIGINT, signal_handler)
+signal.signal(signal.SIGTERM, signal_handler)
 
 @app.route('/')
 def health_check():
@@ -39,7 +57,8 @@ def health_check():
         "uptime": f"{hours}h {minutes}m",
         "total_requests": bot_status["total_requests"],
         "last_activity": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(bot_status["last_activity"])),
-        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
+        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "mode": bot_status["bot_mode"]
     })
 
 @app.route('/ping')
@@ -50,15 +69,46 @@ def ping():
         "status": "pong", 
         "timestamp": time.strftime("%H:%M:%S"),
         "bot": "Zeus Auto Bot",
-        "uptime": f"{int((time.time() - bot_status['start_time']) // 3600)}h {int(((time.time() - bot_status['start_time']) % 3600) // 60)}m"
+        "uptime": f"{int((time.time() - bot_status['start_time']) // 3600)}h {int(((time.time() - bot_status['start_time']) % 3600) // 60)}m",
+        "mode": bot_status["bot_mode"]
     })
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    """Webhook endpoint cho Telegram (tùy chọn)"""
-    update = telebot.types.Update.de_json(request.stream.read().decode('utf-8'))
-    bot.process_new_updates([update])
-    return 'ok', 200
+    """Webhook endpoint cho Telegram"""
+    try:
+        update = telebot.types.Update.de_json(request.stream.read().decode('utf-8'))
+        bot.process_new_updates([update])
+        bot_status["last_activity"] = time.time()
+        return 'ok', 200
+    except Exception as e:
+        print(f"❌ Webhook error: {e}")
+        return 'error', 500
+
+@app.route('/set-webhook', methods=['POST'])
+def set_webhook():
+    """Set webhook URL"""
+    try:
+        webhook_url = request.json.get('url')
+        if webhook_url:
+            bot.remove_webhook()
+            bot.set_webhook(url=webhook_url)
+            bot_status["bot_mode"] = "webhook"
+            return jsonify({"status": "success", "webhook_url": webhook_url}), 200
+        else:
+            return jsonify({"status": "error", "message": "No URL provided"}), 400
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+@app.route('/remove-webhook', methods=['POST'])
+def remove_webhook():
+    """Remove webhook and switch to polling"""
+    try:
+        bot.remove_webhook()
+        bot_status["bot_mode"] = "polling"
+        return jsonify({"status": "success", "mode": "polling"}), 200
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 # Cấu hình các trang web (từ userscript gốc)
 SITE_CONFIGS = {
@@ -315,6 +365,7 @@ def send_status(message):
     status_text += f"📋 Số site hỗ trợ: {len(SITE_CONFIGS)}\n"
     status_text += f"⏰ Uptime: {hours}h {minutes}m\n"
     status_text += f"📈 Tổng requests: {bot_status['total_requests']}\n"
+    status_text += f"🔧 Mode: {bot_status['bot_mode']}\n"
     status_text += "⚡ API: traffic-user.net\n"
     status_text += "🕐 Thời gian: " + time.strftime("%H:%M:%S")
     
@@ -331,24 +382,64 @@ def echo_all(message):
     else:
         bot.reply_to(message, "💬 Gõ /start để bắt đầu hoặc /help để xem hướng dẫn.")
 
-def run_bot():
-    """Chạy bot trong thread riêng"""
-    print("🚀 Khởi động Zeus Auto Bot...")
+def run_bot_polling():
+    """Chạy bot với polling mode"""
+    global bot_instance
+    print("🚀 Khởi động Zeus Auto Bot (Polling Mode)...")
     print("📱 Bot đã sẵn sàng nhận lệnh!")
     print("🔗 API: traffic-user.net")
     print("🔄 Keep alive mode: ENABLED")
     
     try:
-        bot.polling(none_stop=True)
+        # Remove any existing webhook
+        bot.remove_webhook()
+        bot_status["bot_mode"] = "polling"
+        
+        # Start polling with error handling
+        bot_instance = bot
+        bot.polling(none_stop=True, timeout=60, long_polling_timeout=60)
+        
     except Exception as e:
         print(f"❌ Lỗi khi khởi động bot: {e}")
+        # Retry after 30 seconds
+        time.sleep(30)
+        run_bot_polling()
+
+def run_bot_webhook():
+    """Chạy bot với webhook mode"""
+    global bot_instance
+    print("🚀 Khởi động Zeus Auto Bot (Webhook Mode)...")
+    print("📱 Bot đã sẵn sàng nhận lệnh!")
+    print("🔗 API: traffic-user.net")
+    print("🔄 Keep alive mode: ENABLED")
+    
+    try:
+        # Set webhook
+        webhook_url = os.getenv('WEBHOOK_URL', 'https://your-bot.onrender.com/webhook')
+        bot.set_webhook(url=webhook_url)
+        bot_status["bot_mode"] = "webhook"
+        bot_instance = bot
+        
+    except Exception as e:
+        print(f"❌ Lỗi khi set webhook: {e}")
+        # Fallback to polling
+        run_bot_polling()
 
 def main():
     """Hàm chính khởi động cả bot và web server"""
-    # Chạy bot trong thread riêng
-    bot_thread = threading.Thread(target=run_bot)
-    bot_thread.daemon = True
-    bot_thread.start()
+    # Chọn mode dựa trên environment
+    bot_mode = os.getenv('BOT_MODE', 'polling')
+    
+    if bot_mode == 'webhook':
+        # Chạy bot webhook trong thread riêng
+        bot_thread = threading.Thread(target=run_bot_webhook)
+        bot_thread.daemon = True
+        bot_thread.start()
+    else:
+        # Chạy bot polling trong thread riêng
+        bot_thread = threading.Thread(target=run_bot_polling)
+        bot_thread.daemon = True
+        bot_thread.start()
     
     # Chạy Flask app
     port = int(os.environ.get('PORT', 5000))
